@@ -86,47 +86,58 @@ Bright Data. The derived fold IS the bill, and the pinned rate is guarded by
 D2 / clay D7a posture. Bright Data publishes no machine-readable pricing
 surface either, so no `scripts/drift/` suite is added.
 
-## D4 — The envelope is necessary but NOT sufficient; delivery is the billing signal
+## D4 — A failed unlock is a provider error, read off Bright Data's own headers
 
-Bright Data bills per SUCCESSFUL request. The first reading of the wire said
-the envelope answers which those are, and most of it holds:
+Bright Data bills per SUCCESSFUL request. A request it cannot accept answers a
+real non-2xx and the engine zero-bills it. But once a request reaches the
+unlocker, the outer status is 200 whatever happened, and the verdict rides in
+headers: Bright Data's error-code reference
+(`docs.brightdata.com/products/web-unlocker/error-codes`) states that EVERY
+unlocker failure carries `x-brd-error`, most also a machine code —
+`x-brd-error-code` for an unlocker-level failure, `x-brd-err-code` for a
+proxy-level one passed through — and `x-brd-status-code` the result status.
+Absent `x-brd-error`, the payload is the target's own, its error pages
+included.
 
-| case | envelope | payload | billed | drilled |
-| --- | --- | --- | --- | --- |
-| unlock performed, target 200 | 200 | the page | yes | `raw` and `json` |
-| unlock performed, target 404 | **200**, target status in `x-brd-status-code` | the 404 page | yes | both formats |
-| **unlock FAILED upstream** | **200**, `x-brd-status-code: 502` | **empty** | **no** | live, 2026-09-23 |
-| zone not found | 400, body `zone "x" not found` | — | no | live |
-| rejected key | 401, body `Invalid token` | — | no | live |
+| case | outer | verdict | payload | billed | drilled |
+| --- | --- | --- | --- | --- | --- |
+| unlock performed, target 200 | 200 | none | the page | yes | `raw` and `json` |
+| unlock performed, target 404 | 200 | none (`x-brd-status-code: 404`) | the 404 page | yes | both formats |
+| unlock failed (`no_peers`, `proxy_error`, `req_timeout`) | 200 | `x-brd-error-code`, `x-brd-status-code: 502` | **empty** | **no** | live, 2026-10-04 |
+| SERP zone, unsupported url (`wrong_api`) | 200 | `x-brd-error-code`, `x-brd-status-code: 400` | **plain-text reason** | **no** | live, 2026-10-04 |
+| any of the above under `format: "json"` | 200 | **inside the body**: `status_code` + `headers.x-brd-error-code` | the envelope | per row | live, 2026-10-04 |
+| zone not found | 400, body `zone "x" not found` | — | — | no | live |
+| rejected key | 401, body `Invalid token` | — | — | no | live |
 
-The third row is the one that matters, and it was found by re-running the
-live suite rather than by reading the docs: Bright Data can accept a request,
-fail the unlock upstream, and STILL answer HTTP 200 — with an empty body and
-the real status only in `x-brd-status-code`. `isProviderError` is false, so
-the engine's zero-bill rule never fires, and a flat `PER_CALL` model would
-have charged $0.0015 for a request that delivered nothing.
+So the provider authors `lifecycle.start` — cloro's seam, provider-level
+because both endpoints are synchronous — and reads the verdict in BOTH places:
+the outer headers under `format: "raw"`, the body's `headers` under
+`format: "json"`, where the outer envelope carries no `x-brd-*` header at all.
+A verdict settles as a provider error, the hunterio 222 posture: OURS is
+Bright Data's own result status (`x-brd-status-code`, or the body's
+`status_code`; 502 when neither states a 4xx/5xx), THEIRS is the 200 that
+carried it. The engine zero-bills it; no fn can bill an error.
 
-Headers do not reach a fn (and `record` drops them, so no fixture could pin
-one), but the empty payload does — the sniffing decode renders it as `null`.
-So the model meters DELIVERY: a leaf `PER_UNIT`·`RESULT` line settled 0|1 by
-`usage.evidence`, counting 1 when a payload came back and 0 when it did not.
-That is litescrape's shape (`PER_UNIT`·`RESULT`, 0|1 on a result check), for
-the same reason.
+Under `format: "raw"` the headers never reach the caller, so the lifecycle
+lifts the codes into the shape `format: "json"` would have carried —
+`{status_code, headers: {x-brd-*}, body}` — and a failure reads the same
+whichever format was asked for. Under `format: "json"` the body already IS
+that envelope and passes through.
 
-The target's status is still never the envelope's: a page that 404s is an
-unlock Bright Data performed and charges for, and its payload is the 404
-page — non-empty, so it counts 1. A caller who needs to branch on the
-target's status sends `format: "json"`, which lifts it into the body as
-`status_code`. Both endpoint descriptions say so.
+The fixture allowlist (`RECORDED_RES_HEADERS`) grows by
+`x-brd-status-code`, `x-brd-error-code` and `x-brd-err-code`, so the
+recorded chains pin the rule. `x-brd-error`, the prose message, is left out
+on purpose: its `premium` form embeds the zone's control-panel edit url,
+which identifies the account. The rule still reads it live, so the 403
+policy case the reference documents with a message and no code is caught.
 
-Stated rather than guessed at: Bright Data publishes no meter (D3), so
-whether it ALSO declines to charge for the empty 502 cannot be proven from
-the wire. Its own card says "pay only for success" and nothing was
-delivered, so counting 0 is both the conservative reading and the one that
-matches the vendor's stated posture. If it turns out Bright Data does deduct
-for these, the connector under-bills that case by $0.0015 — the direction a
-rate card should err in, and litescrape absorbs the same trade in the
-opposite direction for its empty successes.
+Superseded: the first revision metered DELIVERY instead (`PER_UNIT`·`RESULT`
+settled 0|1 on an empty payload), because headers were believed unreachable
+from a fn. They are reachable from a lifecycle, and the drill shows the
+empty-body proxy was wrong in both directions: `wrong_api` fails with a
+NON-empty body (it would have billed), and a target that legitimately
+answers an empty 200 is a delivered unlock Bright Data charges for (it would
+have under-billed).
 
 ## D5 — Errors are bare strings, and pass through untouched
 
@@ -145,12 +156,9 @@ Both products are priced per REQUEST, not per result and not per byte:
 $1.50 per 1,000 requests pay-as-you-go (`brightdata.com/pricing/serp` and
 `/pricing/web-unlocker`, read 2026-09-23) — $0.0015 a call.
 
-Per request, not per result — but not per ATTEMPT either (D4), so the line is
-a leaf `PER_UNIT`·`RESULT` at `every: 1`, settled 0|1 on delivery rather than
-a flat `PER_CALL`. The estimate promises the one request; the evidence
-decides whether it delivered. Both sources are identical across the two
-endpoints and intern to one fnTable entry each, which the provider suite
-pins.
+Per request, not per result, so the model is a flat `PER_CALL`. It is never
+per ATTEMPT: a failed unlock settles as a provider error before the model is
+consulted (D4), so no evidence fn has to second-guess delivery.
 
 The pool is US DOLLARS. Bright Data publishes no credit unit — it prices in
 dollars directly — so unlike Firecrawl there is no vendor-native unit to

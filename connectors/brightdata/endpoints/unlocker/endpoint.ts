@@ -1,4 +1,4 @@
-import { defineEndpoint, Unit, UsageModelKind } from "@shared/core";
+import { defineEndpoint, UsageModelKind } from "@shared/core";
 import { zBrightdataUnlockerBody } from "./schema/inputs.ts";
 
 /**
@@ -21,10 +21,9 @@ export default defineEndpoint({
         summary:
             "Fetch any public URL past CAPTCHAs, bot detection and geo-blocks.",
         description: "Fetch a public web page that does not want to be " +
-            "fetched, and get its content back as the target's own HTML, as " +
-            'clean markdown (`data_format: "markdown"`), or as a PNG ' +
-            "screenshot of the rendered page " +
-            '(`data_format: "screenshot"`). CAPTCHAs, TLS fingerprinting, ' +
+            "fetched, and get its content back as the target's own HTML or " +
+            'as clean markdown (`data_format: "markdown"`). CAPTCHAs, TLS ' +
+            "fingerprinting, " +
             "bot scoring and geo-walls are handled on the way: a block is " +
             "retried from a different IP rather than returned as an empty " +
             "page, and `country` picks where the request egresses from, so " +
@@ -63,32 +62,12 @@ export default defineEndpoint({
     usage: {
         // $1.50 / 1,000 requests, Bright Data's published pay-as-you-go
         // rate for Web Unlocker API (brightdata.com/pricing/web-unlocker,
-        // read 2026-09-23), counted 0|1 by the evidence below: a 200 that
-        // delivered no payload is an upstream failure, not a billable
-        // request (design D4).
+        // read 2026-09-23). A failed unlock never reaches this line: the
+        // provider's lifecycle settles it as a provider error (design D4).
         model: {
-            kind: UsageModelKind.PER_UNIT,
-            unit: Unit.RESULT,
-            label: "delivered requests",
-            description: "requests that came back carrying a payload",
+            kind: UsageModelKind.PER_CALL,
+            label: "request",
             consumes: { credit: "default", amount: 0.0015 },
-        },
-        /** One request is promised; whether it DELIVERS is the settle's
-         *  question, never the estimate's. */
-        estimate: () => ({ counts: { RESULT: 1 } }),
-        /** Design D4. Bright Data can accept a request, fail the unlock
-         *  upstream, and still answer 200 — with an EMPTY body and the
-         *  real status in `x-brd-status-code` (a 502 was drilled live
-         *  2026-09-23). Headers do not reach a fn, but the empty payload
-         *  does: the sniffing decode renders it as `null`. So delivery is
-         *  read off the payload itself — a null, or a blank string, is
-         *  nothing delivered and draws nothing. This source is identical
-         *  on both endpoints and interns to one fnTable entry. */
-        evidence: ({ data }) => {
-            const body = data.output;
-            const blank = body === null ||
-                (typeof body === "string" && body.trim() === "");
-            return { counts: { RESULT: blank ? 0 : 1 } };
         },
     },
 });

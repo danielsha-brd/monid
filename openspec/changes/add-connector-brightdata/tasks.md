@@ -17,7 +17,11 @@
       a rejected key is 401, both plain text
 - [x] 1.6 Second pass on D4 after a live re-run: an unlock that fails
       UPSTREAM also answers 200, with an empty body and `x-brd-status-code:
-      502`. Delivery, not the envelope, is the billing signal
+      502`
+- [x] 1.7 Third pass on D4 (review): verdict headers per the vendor's
+      error-code reference, drilled live — `no_peers` / `proxy_error` /
+      `req_timeout` (empty body, 502), SERP `wrong_api` (NON-empty body,
+      400), and under `format: "json"` the verdict inside the body
 - [x] 1.5 Read the published rate off the pricing pages: $1.50 / 1,000
       requests pay-as-you-go for both, $1.30 above the $499 Scale
       allowance, 5,000/month free tier shared across products
@@ -29,16 +33,18 @@
 - [x] 2.2 `schema/request-body.ts`: the shared mirror, `zone` deliberately
       absent, optionality only
 - [x] 2.3 `provider.ts`: baseUrl, timeouts, dollar credit pool, credentials;
-      no inject, no consolidate, no fromError, no lifecycle
+      no inject, no consolidate, no fromError; a `lifecycle.start` that
+      settles an in-band failure as a provider error (D4)
 
 ## 3. Endpoints (2)
 
 - [x] 3.1 `serp` — declared id `/serp`, inline inject over `serpZone`,
-      SERP-specific `url` description, `PER_UNIT`·`RESULT` 0.0015
+      SERP-specific `url` description, `PER_CALL` 0.0015
 - [x] 3.2 `unlocker` — declared id `/unlocker`, inline inject over
-      `unlockerZone`, mirror + `render` + `debug`, `PER_UNIT`·`RESULT` 0.0015
+      `unlockerZone`, mirror + `render` + `debug`, `PER_CALL` 0.0015;
+      `data_format: "screenshot"` held back (binary body)
 
-## 4. Fixtures (5, real recordings, hand-minimized)
+## 4. Fixtures (8, real recordings, hand-minimized)
 
 - [x] 4.1 `serp-ok` — parsed results page, arrays capped, base64 `icon`
       leaves dropped
@@ -46,17 +52,22 @@
 - [x] 4.3 `unlocker-target-404` — the 200 envelope carrying `status_code: 404`
 - [x] 4.4 `invalid-token` — plain-text 401
 - [x] 4.5 `zone-not-found` — plain-text 400
-- [x] 4.6 `upstream-failure-empty` — the 200 with an empty payload
+- [x] 4.6 `unlock-failed-raw` — 200, empty body, `x-brd-error-code: no_peers`
+- [x] 4.7 `unlock-failed-json` — 200, verdict inside the body
+- [x] 4.8 `serp-wrong-api` — 200, NON-empty body, `wrong_api` / 400
+- [x] 4.9 `RECORDED_RES_HEADERS` += `x-brd-status-code`, `x-brd-error-code`,
+      `x-brd-err-code` (not `x-brd-error`: account-identifying)
 
 ## 5. Tests
 
 - [x] 5.1 serp: happy fold, zone absent from the schema, rate pin,
-      plain-text 401, live
+      `wrong_api` failure, plain-text 401, schema gate, live
 - [x] 5.2 unlocker: markdown-as-string, target-404 billable, wrong zone,
-      twin-id assertion, schema gate, live
+      failed unlock under raw and json, twin-id assertion, schema gate
+      (incl. `screenshot` rejected), live
 - [x] 5.4 `provider.test.ts` provenance: the rate table, an own inject per
-      endpoint, one interned estimate and evidence, no consolidate /
-      fromError / fromResponse / lifecycle
+      endpoint, one provider-authored lifecycle start shared by both, no
+      consolidate / fromError / fromResponse / poll / stop
 - [x] 5.3 `deno task check`, `deno task lint`, `deno fmt --check`,
       `deno task test`, live suite against a real key
 

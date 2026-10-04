@@ -6,7 +6,9 @@ import { testBundle } from "@shared/testing";
  * endpoint. Pins the three claims the design record makes that no single
  * endpoint test can see: which fns exist at all, that the two `auth.inject`
  * sources are DISTINCT (design D1 — the zone field is the product switch,
- * so they cannot intern to one entry), and the rate table.
+ * so they cannot intern to one entry), that ONE provider-authored
+ * `lifecycle.start` reads the in-band failure verdict for both (design D4),
+ * and the rate table.
  *
  * The rates are written as LITERALS on purpose (clay D7a): deriving them
  * from each doc's own model would make this a tautology, because the engine
@@ -51,14 +53,14 @@ Deno.test("brightdata docs: an own inject per endpoint, no meter, no reshaping, 
         assertEquals(doc.output.fromError, undefined, id);
         // the validated input IS the wire body, plus the injected zone
         assertEquals(doc.input.toRequest, undefined, id);
-        // both endpoints are synchronous
-        assertEquals(doc.lifecycle, undefined, id);
+        // both endpoints are synchronous: a start, never a poll or stop
+        assertEquals(doc.lifecycle?.poll, undefined, id);
+        assertEquals(doc.lifecycle?.stop, undefined, id);
+        // flat per request — a failed unlock is settled as an error by the
+        // lifecycle, so no evidence fn has to second-guess delivery (D4)
         assertEquals(doc.usage.model, {
-            kind: "PER_UNIT",
-            unit: "RESULT",
-            every: 1,
-            label: "delivered requests",
-            description: "requests that came back carrying a payload",
+            kind: "PER_CALL",
+            label: "request",
             consumes: { credit: "default", amount: RATE[id] },
         }, id);
         assertEquals(
@@ -76,28 +78,21 @@ Deno.test("brightdata docs: an own inject per endpoint, no meter, no reshaping, 
     }
 });
 
-Deno.test("brightdata docs: one delivery rule, interned — both endpoints share the estimate and the evidence", async () => {
+Deno.test("brightdata docs: one failure rule, authored on the provider — both endpoints share the lifecycle start", async () => {
     const bundle = await testBundle();
     const serp = bundle.endpoints["brightdata#serp"];
     const unlocker = bundle.endpoints["brightdata#unlocker"];
-    // design D4 is ONE rule, so the two sources are byte-identical and
-    // content-addressing must collapse them to a single fnTable entry
-    assertEquals(
-        serp.usage.evidence.$fn.key,
-        unlocker.usage.evidence.$fn.key,
+    // design D4 is ONE rule over one wire path, so both docs must point at
+    // the same fnTable entry, authored on the provider (cloro's seam)
+    const start = serp.lifecycle?.start?.$fn.key;
+    assert(start !== undefined, "brightdata#serp must carry a start");
+    assertEquals(unlocker.lifecycle?.start?.$fn.key, start);
+    assert(
+        bundle.fnTable[start].provenance.startsWith(
+            "connectors/brightdata/provider",
+        ),
+        "the failure rule must be authored on the provider",
     );
-    assertEquals(
-        serp.usage.estimate.$fn.key,
-        unlocker.usage.estimate.$fn.key,
-    );
-    // and they are authored here, never the compiler's empty synthesis
-    for (const doc of [serp, unlocker]) {
-        assert(
-            bundle.fnTable[doc.usage.evidence.$fn.key].provenance.startsWith(
-                "connectors/brightdata/endpoints/",
-            ),
-        );
-    }
 });
 
 Deno.test("brightdata docs: the two injects are DISTINCT — the zone field is the product switch", async () => {

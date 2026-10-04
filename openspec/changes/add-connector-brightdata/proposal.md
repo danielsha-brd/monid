@@ -22,8 +22,9 @@ not itself a secret. Getting that seam right is most of this change.
   - `brightdata#serp` — SERP API: Google / Bing / Yandex / DuckDuckGo
     results pages as parsed JSON.
   - `brightdata#unlocker` — Web Unlocker API: any public URL fetched past
-    CAPTCHAs, bot detection and geo-blocks, as HTML, markdown or a PNG
-    screenshot.
+    CAPTCHAs, bot detection and geo-blocks, as HTML or markdown. The
+    vendor's `screenshot` format is held back: the transport reads every
+    body as text, which would corrupt a PNG.
 - **The zone travels with the key** (D1). `auth.credentials` is
   `{apiKey, serpZone, unlockerZone}` and each endpoint's own `auth.inject`
   merges its zone into the body at egress. `zone` is therefore absent from
@@ -39,25 +40,24 @@ not itself a secret. Getting that seam right is most of this change.
 - **No vendor meter** (D3). Verified live: a successful response carries no
   credits field, no cost field and no usage header, so there is no
   `usage.consolidate` and the derived fold IS the bill.
-- **Delivery is the billing signal, not the envelope** (D4). Bright Data can
-  accept a request, fail the unlock upstream, and still answer HTTP 200 —
-  with an empty body and the real status only in `x-brd-status-code` (a 502,
-  drilled live). `isProviderError` is false there, so the engine's zero-bill
-  rule never fires and a flat model would charge for a request that delivered
-  nothing. Headers do not reach a fn, but the empty payload does, so the
-  model meters DELIVERY: `PER_UNIT`·`RESULT` settled 0|1 by `usage.evidence`
-  — litescrape's shape, for the same reason. A target 404 still counts 1: the
-  unlock happened and its payload is the 404 page.
+- **A failed unlock is a provider error** (D4). Past request validation,
+  Bright Data answers an outer 200 whatever happened and states a failure in
+  headers (`x-brd-error-code` / `x-brd-err-code`, `x-brd-status-code`) — or,
+  under `format: "json"`, inside the body. A provider-level `lifecycle.start`
+  reads both and settles a failure as OURS = Bright Data's result status /
+  THEIRS = 200, zero-billed — the hunterio 222 posture. A target 404 is
+  still a billable unlock: no verdict header, and the payload is the 404
+  page. `RECORDED_RES_HEADERS` grows by the three code/status headers.
 - **$1.50 per 1,000 requests** pay-as-you-go for both products — $0.0015 per
-  delivered request, pinned from the published card and re-audited on
+  successful request, flat `PER_CALL`, pinned from the published card and re-audited on
   repricing (the exa / apify posture). Neither result count nor page weight
   enters the bill.
 - **Errors are bare strings and stay that way** (D5). Bright Data answers a
   rejected request with `Invalid token`, not a JSON envelope. The engine's
   sniffing decode already renders that faithfully, so no `output.fromError`.
-- Six real recorded fixtures, hand-minimized, covering both happy paths, a
-  target 404, an upstream failure behind a 200, a rejected key and a wrong
-  zone.
+- Eight real recorded fixtures, hand-minimized, covering both happy paths, a
+  target 404, a failed unlock behind a 200 under `raw` and under `json`, a
+  SERP `wrong_api` with a non-empty body, a rejected key and a wrong zone.
 
 ## Capabilities
 

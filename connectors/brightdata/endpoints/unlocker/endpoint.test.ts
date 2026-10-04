@@ -55,7 +55,7 @@ Deno.test("brightdata#unlocker happy: a markdown payload is a STRING, and rides 
     assertEquals(result.isProviderError, false);
     assertEquals(result.usage, {
         credits: { default: 0.0015 },
-        evidence: { RESULT: 1 },
+        evidence: { CALL: 1 },
     });
     // the engine's sniffing decode: a body that is not JSON is the complete
     // raw body as a faithful string. No connector-side parsing is authored,
@@ -85,7 +85,7 @@ Deno.test("brightdata#unlocker: a target 404 is billable success, not a provider
     assertEquals(result.isProviderError, false);
     assertEquals(result.usage, {
         credits: { default: 0.0015 },
-        evidence: { RESULT: 1 },
+        evidence: { CALL: 1 },
     });
     assertEquals(
         (result.output as Record<string, unknown>).status_code,
@@ -106,6 +106,59 @@ Deno.test("brightdata#unlocker: a wrong zone is a plain-text 400, zero usage", a
     assertEquals(result.isProviderError, true);
     assertEquals(result.usage, { credits: {}, evidence: {} });
     assertEquals(result.output, 'zone "no_such_zone_xyz" not found');
+});
+
+Deno.test("brightdata#unlocker: a failed unlock under raw is a provider error, its code lifted into the output", async () => {
+    const unit = await testSealedUnit("brightdata#unlocker");
+    const result = await runEndpoint({
+        unit,
+        input: {
+            body: { url: "https://example.com/", format: "raw", country: "aq" },
+        },
+        mode: "replay",
+        fixture: await loadFixture(`${chains}unlock-failed-raw.json`),
+    });
+
+    // design D4: outer 200, empty body, verdict only in the headers —
+    // OURS is Bright Data's result status, THEIRS the 200 that carried it
+    assertEquals(result.httpStatus, 502);
+    assertEquals(result.providerHttpStatus, 200);
+    assertEquals(result.isProviderError, true);
+    assertEquals(result.usage, { credits: {}, evidence: {} });
+    assertEquals(result.output, {
+        status_code: 502,
+        headers: { "x-brd-error-code": "no_peers" },
+        body: "",
+    });
+});
+
+Deno.test("brightdata#unlocker: under json the verdict rides IN the body, and is read there too", async () => {
+    const unit = await testSealedUnit("brightdata#unlocker");
+    const result = await runEndpoint({
+        unit,
+        input: {
+            body: {
+                url: "https://example.com/",
+                format: "json",
+                country: "aq",
+            },
+        },
+        mode: "replay",
+        fixture: await loadFixture(`${chains}unlock-failed-json.json`),
+    });
+
+    // the outer envelope carries no x-brd-* header at all here, so a
+    // header-only check would bill this; the body is the envelope instead
+    assertEquals(result.httpStatus, 502);
+    assertEquals(result.providerHttpStatus, 200);
+    assertEquals(result.isProviderError, true);
+    assertEquals(result.usage, { credits: {}, evidence: {} });
+    const output = result.output as Record<string, unknown>;
+    assertEquals(output.status_code, 502);
+    assertEquals(
+        (output.headers as Record<string, unknown>)["x-brd-error-code"],
+        "no_peers",
+    );
 });
 
 Deno.test("brightdata: the twins share one wire path and are told apart by declared id", async () => {
@@ -151,7 +204,7 @@ Deno.test("brightdata#unlocker schema gate: the vendor's string-typed `render` i
             data_format: "markdown",
             debug: true,
         }),
-        { credits: { default: 0.0015 }, evidence: { RESULT: 1 } },
+        { credits: { default: 0.0015 }, evidence: { CALL: 1 } },
     );
 });
 
@@ -172,19 +225,15 @@ Deno.test({
             },
             mode: "live",
         });
-        assertEquals(
-            result.isProviderError,
-            false,
-            JSON.stringify(result.output).slice(0, 400),
-        );
-        // shape, not amounts; and delivery is not assumed (design D4).
-        if (result.output === null) {
-            assertEquals(result.usage, {
-                credits: {},
-                evidence: { RESULT: 0 },
-            });
+        // shape, not amounts; and delivery is not assumed (design D4): an
+        // in-band failure is a zero-billed provider error naming its code
+        if (result.isProviderError) {
+            assertEquals(result.providerHttpStatus, 200);
+            assertEquals(result.usage, { credits: {}, evidence: {} });
+            const output = result.output as Record<string, unknown>;
+            assertEquals(output.status_code, result.httpStatus);
         } else {
-            assertEquals(result.usage.evidence, { RESULT: 1 });
+            assertEquals(result.usage.evidence, { CALL: 1 });
             assertEquals(typeof result.usage.credits.default, "number");
             assertEquals(typeof result.output, "string");
         }

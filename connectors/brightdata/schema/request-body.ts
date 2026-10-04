@@ -38,10 +38,12 @@ export const zBrightdataRequestBody = z.object({
             "`de`). Omitted, Bright Data picks a location from the zone's " +
             "own configuration.",
     ),
-    data_format: z.enum(["markdown", "screenshot"]).optional().describe(
+    // Bright Data also documents `screenshot` (a PNG of the rendered page).
+    // It is left out until the engine carries binary bodies: the transport
+    // reads every body as text, which would corrupt the image.
+    data_format: z.enum(["markdown"]).optional().describe(
         "Payload transformation applied before the envelope. `markdown` " +
-            "converts the fetched HTML to clean markdown; `screenshot` " +
-            "returns a PNG of the rendered page instead of its markup. " +
-            "Omitted, the payload is the target's own HTML.",
+            "converts the fetched HTML to clean markdown. Omitted, the " +
+            "payload is the target's own HTML.",
     ),
 });

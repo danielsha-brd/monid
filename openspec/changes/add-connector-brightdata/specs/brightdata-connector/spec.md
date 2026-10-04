@@ -45,41 +45,56 @@ via `utils.json.merge`.
 - **THEN** `render` and `debug` are present on `brightdata#unlocker` and
   absent from `brightdata#serp`
 
-### Requirement: Per-DELIVERED-request billing at the published pay-as-you-go rate
-Each endpoint SHALL declare a LEAF `PER_UNIT` model on `Unit.RESULT` at
-`every: 1`, consuming 0.0015 of the `default` pool, with a `usage.estimate`
-promising the one request and a `usage.evidence` settling it 0|1 on whether
-a payload was delivered. Both fns SHALL be identical across the two
-endpoints and intern to one fnTable entry each.
+### Requirement: Per-request billing at the published pay-as-you-go rate
+Each endpoint SHALL declare a flat `PER_CALL` model consuming 0.0015 of the
+`default` pool.
 
 #### Scenario: Result count does not enter the bill
 - **WHEN** `brightdata#serp` returns a page of organic results
-- **THEN** usage is `{credits: {default: 0.0015}, evidence: {RESULT: 1}}`
+- **THEN** usage is `{credits: {default: 0.0015}, evidence: {CALL: 1}}`
 
 #### Scenario: Page weight does not enter the bill
 - **WHEN** `brightdata#unlocker` returns a markdown payload
-- **THEN** usage is `{credits: {default: 0.0015}, evidence: {RESULT: 1}}`
+- **THEN** usage is `{credits: {default: 0.0015}, evidence: {CALL: 1}}`
 
-### Requirement: Delivery decides what is billed
-A 2xx envelope that CARRIES A PAYLOAD SHALL settle as billable, regardless
-of the TARGET's own status code, which Bright Data reports in the
-`x-brd-status-code` response header and, under `format: "json"`, as a
-`status_code` field in the body. A 2xx envelope with an empty payload — an
-unlock Bright Data accepted and failed upstream — SHALL settle at zero
-without being a provider error. A non-2xx envelope SHALL settle as
+### Requirement: Bright Data's own failure verdict decides what is billed
+The provider SHALL author one `lifecycle.start`, shared by both endpoints.
+A 2xx response that carries `x-brd-error-code`, `x-brd-err-code` or
+`x-brd-error` — in the response headers, or under `format: "json"` in the
+body's `headers` — SHALL settle as a provider error whose `httpStatus` is
+Bright Data's stated result status (`x-brd-status-code` or the body's
+`status_code`, 502 when neither is a 4xx/5xx) and whose
+`providerHttpStatus` is the outer status. Under `format: "raw"` the output
+SHALL be `{status_code, headers, body}` carrying the `x-brd-*` failure
+headers. A 2xx without a verdict SHALL settle as billable regardless of the
+TARGET's own status code. A non-2xx SHALL be relayed verbatim as a
 zero-usage provider error.
 
-#### Scenario: A 200 that delivered nothing draws nothing
-- **WHEN** Bright Data answers 200 with an empty body (the real status only
-  in `x-brd-status-code`, a 502 drilled live)
-- **THEN** `isProviderError` is false and usage is
-  `{credits: {}, evidence: {RESULT: 0}}`
+#### Scenario: A failed unlock behind a 200 draws nothing
+- **WHEN** Bright Data answers 200 with an empty body,
+  `x-brd-error-code: no_peers` and `x-brd-status-code: 502`
+- **THEN** `httpStatus` is 502, `providerHttpStatus` is 200,
+  `isProviderError` is true, usage is `{credits: {}, evidence: {}}`, and the
+  output is `{status_code: 502, headers: {x-brd-error-code: "no_peers"},
+  body: ""}`
+
+#### Scenario: The verdict is read inside a json envelope
+- **WHEN** a `format: "json"` call answers 200 with no `x-brd-*` header and a
+  body carrying `status_code: 502` and `headers.x-brd-error-code`
+- **THEN** `httpStatus` is 502, `isProviderError` is true, and usage is
+  `{credits: {}, evidence: {}}`
+
+#### Scenario: A failure with a non-empty body is still a failure
+- **WHEN** `brightdata#serp` answers 200 with a plain-text body,
+  `x-brd-error-code: wrong_api` and `x-brd-status-code: 400`
+- **THEN** `httpStatus` is 400, `isProviderError` is true, and usage is
+  `{credits: {}, evidence: {}}`
 
 #### Scenario: A target 404 is a billable unlock
 - **WHEN** `brightdata#unlocker` fetches a url whose target answers 404 and
-  Bright Data answers 200 with `status_code: 404` in the body
+  Bright Data answers 200 with `status_code: 404` in the body and no verdict
 - **THEN** `isProviderError` is false and usage is
-  `{credits: {default: 0.0015}, evidence: {RESULT: 1}}`
+  `{credits: {default: 0.0015}, evidence: {CALL: 1}}`
 
 #### Scenario: A rejected key is zero-billed data
 - **WHEN** Bright Data answers 401 with the bare string `Invalid token`

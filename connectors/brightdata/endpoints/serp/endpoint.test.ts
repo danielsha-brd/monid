@@ -54,7 +54,7 @@ Deno.test("brightdata#serp happy: no vendor meter, so the derived fold settles t
     // the derived flat $0.0015 stands alone and nothing rides as mismatch.
     assertEquals(result.usage, {
         credits: { default: 0.0015 },
-        evidence: { RESULT: 1 },
+        evidence: { CALL: 1 },
     });
     assertEquals(result.usage.mismatch, undefined);
     // the parsed results page rides through untouched — no fromResponse
@@ -83,37 +83,42 @@ Deno.test("brightdata#serp: the zone is credential material, absent from the cal
     assertEquals(BRIGHTDATA_KEYS, ["apiKey", "serpZone", "unlockerZone"]);
 });
 
-Deno.test("brightdata#serp: one rate per DELIVERED request — result count is not a billing input", async () => {
+Deno.test("brightdata#serp: one flat rate per request — result count is not a billing input", async () => {
     const unit = await testSealedUnit("brightdata#serp");
     const model = unit.doc.usage.model;
-    assert(model.kind === "PER_UNIT", "serp meters delivery, 0|1");
-    assertEquals(model.unit, "RESULT");
-    assertEquals(model.every, 1);
+    assert(model.kind === "PER_CALL", "serp is priced per request");
     assertEquals(model.consumes, { credit: "default", amount: 0.0015 });
 });
 
-Deno.test("brightdata#serp: a 200 that delivered nothing is an upstream failure, and draws nothing", async () => {
+Deno.test("brightdata#serp: a 200 whose headers name a failure is a provider error, even with a body", async () => {
     const unit = await testSealedUnit("brightdata#serp");
     const result = await runEndpoint({
         unit,
         input: {
             body: {
-                url: "https://www.google.com/search?q=pizza",
+                url: "https://no-such-host-zz9q.invalid/search?q=x",
                 format: "raw",
             },
         },
         mode: "replay",
-        fixture: await loadFixture(`${chains}upstream-failure-empty.json`),
+        fixture: await loadFixture(`${chains}serp-wrong-api.json`),
     });
 
-    // design D4, the correction the envelope alone could not make: Bright
-    // Data answered 200 (so `isProviderError` is false and the engine's
-    // zero-bill rule never fires) but delivered no payload, with the real
-    // 502 in a header no fn can read. The empty payload is the signal.
-    assertEquals(result.httpStatus, 200);
-    assertEquals(result.isProviderError, false);
-    assertEquals(result.usage, { credits: {}, evidence: { RESULT: 0 } });
-    assertEquals(result.output, null);
+    // design D4: the outer 200 only says Bright Data took the request. The
+    // verdict is `x-brd-error-code` + `x-brd-status-code`, and the body is a
+    // NON-empty explanation — the case a payload-delivery check would bill.
+    assertEquals(result.httpStatus, 400);
+    assertEquals(result.providerHttpStatus, 200);
+    assertEquals(result.isProviderError, true);
+    assertEquals(result.usage, { credits: {}, evidence: {} });
+    // raw has no envelope to carry the headers, so the lifecycle lifts the
+    // code into the `format: "json"` shape — the reason reaches the caller
+    assertEquals(result.output, {
+        status_code: 400,
+        headers: { "x-brd-error-code": "wrong_api" },
+        body: "This target URL isn't supported with SERP API, use the Web " +
+            "Unlocker product for targeting this URL",
+    });
 });
 
 Deno.test("brightdata#serp provider error: a rejected key is a plain-text 401, zero usage", async () => {
@@ -148,7 +153,7 @@ Deno.test("brightdata#serp schema gate: a bad format is rejected before the wire
     // the near twin passes the gate — proving it is not simply too wide
     assertEquals(await validates({ url, format: "json" }), {
         credits: { default: 0.0015 },
-        evidence: { RESULT: 1 },
+        evidence: { CALL: 1 },
     });
 });
 
@@ -168,22 +173,22 @@ Deno.test({
             },
             mode: "live",
         });
-        assertEquals(
-            result.isProviderError,
-            false,
-            JSON.stringify(result.output).slice(0, 400),
-        );
-        // shape, not amounts. Bright Data can answer 200 with an empty body
-        // when the unlock fails upstream (design D4, drilled 2026-09-23), so
-        // the live assertion pins the RULE rather than assuming delivery:
-        // a payload arrived and drew the rate, or none did and drew nothing.
-        if (result.output === null) {
-            assertEquals(result.usage, {
-                credits: {},
-                evidence: { RESULT: 0 },
-            });
+        // shape, not amounts. Bright Data can fail an unlock in-band —
+        // outer 200, verdict in headers (design D4, intermittent live) — so
+        // the live assertion pins the RULE in both directions rather than
+        // assuming delivery: a failure is a zero-billed provider error that
+        // names its code, and a success is billed and parses to fields.
+        if (result.isProviderError) {
+            assertEquals(result.providerHttpStatus, 200);
+            assertEquals(result.usage, { credits: {}, evidence: {} });
+            const output = result.output as Record<string, unknown>;
+            assertEquals(output.status_code, result.httpStatus);
+            assert(
+                typeof output.headers === "object" && output.headers !== null,
+                "an in-band failure must carry its x-brd-* headers",
+            );
         } else {
-            assertEquals(result.usage.evidence, { RESULT: 1 });
+            assertEquals(result.usage.evidence, { CALL: 1 });
             assertEquals(typeof result.usage.credits.default, "number");
             const output = result.output as Record<string, unknown>;
             assert(
